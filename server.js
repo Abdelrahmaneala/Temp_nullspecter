@@ -10,7 +10,20 @@ const app = express();
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:3000', 'https://yourdomain.com', 'http://localhost:5000'],
+    origin: function(origin, callback) {
+        const allowedOrigins = [
+            'http://localhost:3000',
+            'http://localhost:5000',
+            'https://*.vercel.app',
+            'https://hackmail-pro-complete.vercel.app'
+        ];
+        
+        if (!origin || allowedOrigins.some(allowed => origin.match(allowed))) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 
@@ -33,7 +46,7 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// خدمة الملفات الثابتة للفرونت اند
+// خدمة الملفات الثابتة من مجلد public
 app.use(express.static(path.join(__dirname, 'public')));
 
 // MongoDB Connection
@@ -50,17 +63,15 @@ const EmailMessage = require('./models/EmailMessage');
 
 const axios = require('axios');
 
-// خدمة البريد المتعددة - بس الخدمات اللي شغالة حقيقي
+// خدمة البريد المتعددة
 class MultiEmailService {
     constructor() {
         this.services = {
             'mail.tm': this.mailtmService.bind(this),
             'guerrillamail': this.guerrillaService.bind(this)
-            // شيلنا temp-mail, mintemail, maildrop لأنها مش شغالة كويس
         };
     }
 
-    // Mail.tm Service - يعمل بشكل ممتاز
     async mailtmService(sessionId) {
         try {
             console.log('🔄 Trying Mail.tm service...');
@@ -70,7 +81,6 @@ class MultiEmailService {
             const email = `${username}@${domain}`;
             const password = this.generatePassword();
 
-            // إنشاء الحساب في mail.tm
             const accountResponse = await axios.post('https://api.mail.tm/accounts', {
                 address: email,
                 password: password
@@ -102,7 +112,7 @@ class MultiEmailService {
                     token: tokenResponse.data.token,
                     accountId: accountResponse.data.id,
                     createdAt: new Date(),
-                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 ساعة
+                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
                 };
 
                 const savedAccount = await EmailAccount.create(accountData);
@@ -115,7 +125,6 @@ class MultiEmailService {
         }
     }
 
-    // GuerrillaMail Service - يعمل بشكل ممتاز
     async guerrillaService(sessionId) {
         try {
             console.log('🔄 Trying GuerrillaMail service...');
@@ -135,7 +144,7 @@ class MultiEmailService {
                     token: response.data.sid_token || response.data.email_token,
                     accountId: response.data.email_addr,
                     createdAt: new Date(),
-                    expiresAt: new Date(Date.now() + 60 * 60 * 1000) // 1 ساعة
+                    expiresAt: new Date(Date.now() + 60 * 60 * 1000)
                 };
 
                 const savedAccount = await EmailAccount.create(accountData);
@@ -183,7 +192,6 @@ class MultiEmailService {
     async createAccount(sessionId, service = null) {
         const availableServices = Object.keys(this.services);
         
-        // إذا طلب خدمة محددة
         if (service && this.services[service]) {
             console.log(`🎯 Creating account with specific service: ${service}`);
             const result = await this.services[service](sessionId);
@@ -192,7 +200,6 @@ class MultiEmailService {
             console.log(`❌ Specific service ${service} failed, trying others...`);
         }
 
-        // تجربة جميع الخدمات بالتسلسل
         const shuffledServices = [...availableServices].sort(() => Math.random() - 0.5);
         
         for (const serviceName of shuffledServices) {
@@ -226,10 +233,8 @@ class MultiEmailService {
                     break;
             }
 
-            // معالجة الرسائل مع جلب المحتوى الكامل
             const processedMessages = await this.processMessagesWithFullContent(rawMessages, service, account, email);
             
-            // حفظ الرسائل في MongoDB
             for (const msg of processedMessages) {
                 await EmailMessage.findOneAndUpdate(
                     { 
@@ -268,7 +273,6 @@ class MultiEmailService {
                 let fullContent = '';
                 let messageDetails = {};
 
-                // جلب المحتوى الكامل حسب الخدمة
                 switch (service) {
                     case 'mail.tm':
                         messageDetails = await this.getMailTMFullMessage(account.token, rawMsg.id);
@@ -307,7 +311,6 @@ class MultiEmailService {
         return processedMessages;
     }
 
-    // دوال مساعدة لاستخراج المعلومات
     extractSender(rawMsg, service) {
         switch (service) {
             case 'mail.tm':
@@ -352,7 +355,6 @@ class MultiEmailService {
         }
     }
 
-    // دوال تنسيق المحتوى
     formatMailTMContent(messageDetails, rawMsg) {
         if (messageDetails && messageDetails.text) {
             return this.createDetailedContent(
@@ -395,7 +397,6 @@ class MultiEmailService {
         );
     }
 
-    // دالة لإنشاء محتوى مفصل
     createDetailedContent(sender, subject, textContent, htmlContent, service, date) {
         const timestamp = date ? new Date(date).toLocaleString('ar-EG') : new Date().toLocaleString('ar-EG');
         
@@ -441,7 +442,6 @@ ${htmlContent}
         return content;
     }
 
-    // دالة لإنشاء معاينة
     generatePreview(content) {
         if (!content) return 'لا يوجد محتوى للمعاينة';
         const cleanContent = content.replace(/\n\s*\n/g, '\n').trim();
@@ -449,7 +449,6 @@ ${htmlContent}
         return cleanContent.length > 120 ? preview + '...' : preview;
     }
 
-    // دوال جلب المحتوى الكامل
     async getMailTMFullMessage(token, messageId) {
         try {
             const response = await axios.get(`https://api.mail.tm/messages/${messageId}`, {
@@ -481,7 +480,6 @@ ${htmlContent}
         }
     }
 
-    // دوال جلب الرسائل الأساسية
     async getMailTMMessages(token) {
         try {
             const response = await axios.get('https://api.mail.tm/messages', {
@@ -545,7 +543,7 @@ app.get('/api/health', async (req, res) => {
             accounts: accountsCount,
             messages: messagesCount
         },
-        services: Object.keys(emailService.services) // بس الخدمات الشغالة
+        services: Object.keys(emailService.services)
     });
 });
 
@@ -676,10 +674,17 @@ app.get('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 HackMail Pro Server running on port ${PORT}`);
-    console.log(`📧 Supported services: ${Object.keys(emailService.services).join(', ')}`);
-    console.log(`💾 Database: MongoDB`);
-    console.log(`🌐 Frontend: http://localhost:${PORT}`);
-    console.log(`🔗 API: http://localhost:${PORT}/api/health`);
-});
+
+// Vercel compatibility - export the app
+module.exports = app;
+
+// Only listen locally, not on Vercel
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+        console.log(`🚀 HackMail Pro Server running on port ${PORT}`);
+        console.log(`📧 Supported services: ${Object.keys(emailService.services).join(', ')}`);
+        console.log(`💾 Database: MongoDB`);
+        console.log(`🌐 Frontend: http://localhost:${PORT}`);
+        console.log(`🔗 API: http://localhost:${PORT}/api/health`);
+    });
+}
